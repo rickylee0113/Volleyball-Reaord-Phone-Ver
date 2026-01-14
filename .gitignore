@@ -23,3 +23,16 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Security: Environment Variables (Contain API Keys)
+.env
+.env.*
+!.env.example
+
+# Security: Firebase Admin SDK Keys (NEVER COMMIT THESE)
+serviceAccountKey.json
+google-services.json
+firebase-debug.log
+
+# Testing
+coverage

@@ -2,13 +2,15 @@ import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
+// 透過環境變數讀取設定，避免將金鑰直接寫入程式碼庫
+// 請確認專案根目錄有建立 .env 檔案
 const firebaseConfig = {
-  apiKey: "AIzaSyCJUfhq14RXP4-ikBl2FfrDnTatjugXHg8",
-  authDomain: "volleyball-reaord-phone-ver.firebaseapp.com",
-  projectId: "volleyball-reaord-phone-ver",
-  storageBucket: "volleyball-reaord-phone-ver.firebasestorage.app",
-  messagingSenderId: "825010153270",
-  appId: "1:825010153270:web:4eba9528bee60440acf597"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
 // Initialize Firebase

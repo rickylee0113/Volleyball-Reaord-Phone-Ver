@@ -2,12 +2,8 @@ import React, { useState } from 'react';
 import { Lineup, TeamConfig, LogEntry, Position, ActionType, ActionQuality, ResultType, Coordinate, TeamSide, SavedGame, GameState } from '../types';
 import { Court } from './Court';
 import { StatsOverlay } from './StatsOverlay';
-import { User } from 'firebase/auth';
-import { db } from '../firebaseConfig';
-import { collection, addDoc, query, where, getDocs, orderBy, deleteDoc, doc } from 'firebase/firestore';
 
 interface GameViewProps {
-  user: User; // Added User prop
   teamConfig: TeamConfig;
   currentSet: number;
   mySetWins: number;
@@ -35,8 +31,9 @@ interface GameViewProps {
 
 type GameStep = 'SELECT_PLAYER' | 'SELECT_ACTION' | 'SELECT_QUALITY' | 'RECORD_LOCATION' | 'SELECT_RESULT';
 
+const SAVE_PREFIX = 'volleyscout_save_';
+
 export const GameView: React.FC<GameViewProps> = ({
-  user,
   teamConfig,
   currentSet,
   mySetWins,
@@ -74,10 +71,9 @@ export const GameView: React.FC<GameViewProps> = ({
   // --- Save / Load Logic State ---
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [saveFileName, setSaveFileName] = useState('');
-  const [isCloudLoading, setIsCloudLoading] = useState(false); // Spinner for Cloud Ops
   
   const [showLoadModal, setShowLoadModal] = useState(false);
-  const [savedFiles, setSavedFiles] = useState<{id: string, name: string, date: string, data: SavedGame}[]>([]);
+  const [savedFiles, setSavedFiles] = useState<{key: string, name: string, date: string}[]>([]);
 
   // System Modal State (Replaces native alert/confirm)
   const [modalConfig, setModalConfig] = useState<{
@@ -322,7 +318,7 @@ export const GameView: React.FC<GameViewProps> = ({
       [ActionQuality.POOR]: '-'
   };
 
-  // --- FIRESTORE SAVE Logic ---
+  // --- SAVE Logic ---
   const handleOpenSave = () => {
     const dateStr = new Date().toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit' }).replace(/\//g, '');
     const timeStr = new Date().toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' }).replace(/:/g, '');
@@ -331,13 +327,11 @@ export const GameView: React.FC<GameViewProps> = ({
     setShowSaveModal(true);
   };
 
-  const handleConfirmSave = async () => {
+  const handleConfirmSave = () => {
     if (!saveFileName.trim()) {
         showInfo('錯誤', '請輸入檔案名稱');
         return;
     }
-
-    setIsCloudLoading(true);
 
     const currentState: GameState = {
       currentSet,
@@ -351,100 +345,78 @@ export const GameView: React.FC<GameViewProps> = ({
       logs
     };
     
-    // Structure to save to Firestore
     const saveObject: SavedGame = {
       config: teamConfig,
       state: currentState,
       savedAt: Date.now()
     };
-    
-    // Add custom name property for display
-    const firestoreData = {
-        ...saveObject,
-        name: saveFileName.trim(),
-        userId: user.uid
-    };
+
+    const key = `${SAVE_PREFIX}${saveFileName.trim()}`;
 
     try {
-      // Save to 'matches' collection under the specific user's document to allow easy rules
-      // Structure: matches (collection) -> { userId: uid, ...data }
-      await addDoc(collection(db, 'matches'), firestoreData);
-
+      localStorage.setItem(key, JSON.stringify(saveObject));
       setShowSaveModal(false);
-      showInfo('儲存成功', `檔案 "${saveFileName}" 已上傳至雲端！`);
+      showInfo('儲存成功', `檔案 "${saveFileName}" 已儲存！`);
     } catch (e) {
-      console.error(e);
-      showInfo('儲存失敗', '雲端連線錯誤。');
-    } finally {
-        setIsCloudLoading(false);
+      showInfo('儲存失敗', '可能是裝置儲存空間不足。');
     }
   };
 
-  // --- FIRESTORE LOAD Logic ---
-  const handleOpenLoad = async () => {
+  // --- LOAD Logic ---
+  const handleOpenLoad = () => {
+    const files = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && (key.startsWith(SAVE_PREFIX) || key === 'volleyscout_save')) {
+            let name = key.replace(SAVE_PREFIX, '');
+            if (key === 'volleyscout_save') name = '自動暫存檔 (舊版)';
+            
+            // Try to parse to get date
+            let date = '';
+            try {
+                const item = localStorage.getItem(key);
+                if (item) {
+                    const parsed = JSON.parse(item);
+                    date = new Date(parsed.savedAt).toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+                }
+            } catch (e) {}
+
+            files.push({ key, name, date });
+        }
+    }
+    setSavedFiles(files);
     setShowLoadModal(true);
-    setIsCloudLoading(true);
-    setSavedFiles([]);
-
-    try {
-        const q = query(
-            collection(db, 'matches'), 
-            where("userId", "==", user.uid),
-            orderBy("savedAt", "desc")
-        );
-        
-        const querySnapshot = await getDocs(q);
-        const files: any[] = [];
-        
-        querySnapshot.forEach((doc) => {
-            const data = doc.data() as SavedGame & { name: string };
-            const date = new Date(data.savedAt).toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-            files.push({
-                id: doc.id,
-                name: data.name || '未命名',
-                date: date,
-                data: data
-            });
-        });
-        setSavedFiles(files);
-
-    } catch (e) {
-        console.error("Load error", e);
-        // Fallback for missing indexes or permissions
-        showInfo('讀取失敗', '無法取得雲端列表 (可能是權限或索引問題)');
-    } finally {
-        setIsCloudLoading(false);
-    }
   };
 
-  const handleLoadFile = (fileData: SavedGame, fileName: string) => {
+  const handleLoadFile = (key: string, name: string) => {
+    const savedData = localStorage.getItem(key);
+    if (!savedData) return;
+
     showConfirm(
         '讀取紀錄',
-        `確定要讀取 "${fileName}" 嗎？\n當前的比賽進度將會遺失。`,
+        `確定要讀取 "${name}" 嗎？\n當前的比賽進度將會遺失。`,
         () => {
-             onLoadGame(fileData.state, fileData.config);
-             resetTurn();
-             setShowLoadModal(false);
+            try {
+                const parsed: SavedGame = JSON.parse(savedData);
+                onLoadGame(parsed.state, parsed.config);
+                resetTurn();
+                setShowLoadModal(false);
+            } catch (e) {
+                showInfo('錯誤', '檔案損毀或格式錯誤。');
+            }
         },
         '確認讀取'
     );
   };
 
-  const handleDeleteFile = async (docId: string, e: React.MouseEvent) => {
+  const handleDeleteFile = (key: string, e: React.MouseEvent) => {
     e.stopPropagation();
     showConfirm(
         '刪除存檔',
-        '確定要永久刪除此雲端存檔嗎？',
-        async () => {
-            setIsCloudLoading(true);
-            try {
-                await deleteDoc(doc(db, "matches", docId));
-                setSavedFiles(prev => prev.filter(f => f.id !== docId));
-            } catch (err) {
-                showInfo('錯誤', '刪除失敗');
-            } finally {
-                setIsCloudLoading(false);
-            }
+        '確定要永久刪除此存檔嗎？',
+        () => {
+            localStorage.removeItem(key);
+            setSavedFiles(prev => prev.filter(f => f.key !== key));
         },
         '確認刪除'
     );
@@ -681,7 +653,7 @@ export const GameView: React.FC<GameViewProps> = ({
       if (!showSaveModal) return null;
       return (
           <div className="absolute inset-0 z-[110] bg-black/90 flex flex-col justify-center items-center p-6 animate-fade-in">
-              <h3 className="text-white text-xl font-bold mb-6">儲存至雲端 (Firestore)</h3>
+              <h3 className="text-white text-xl font-bold mb-6">儲存比賽紀錄</h3>
               <div className="w-full max-w-xs mb-6">
                   <label className="text-sm text-gray-400 block mb-2">檔案名稱</label>
                   <input 
@@ -690,23 +662,20 @@ export const GameView: React.FC<GameViewProps> = ({
                     onChange={(e) => setSaveFileName(e.target.value)}
                     className="w-full bg-neutral-800 border border-neutral-600 text-white p-4 rounded-xl focus:border-emerald-500 focus:outline-none"
                     placeholder="輸入名稱..."
-                    disabled={isCloudLoading}
                   />
               </div>
               <div className="flex gap-3 w-full max-w-xs">
                   <button 
                     onClick={() => setShowSaveModal(false)}
-                    disabled={isCloudLoading}
-                    className="flex-1 bg-neutral-700 text-white font-bold py-3 rounded-xl disabled:opacity-50"
+                    className="flex-1 bg-neutral-700 text-white font-bold py-3 rounded-xl"
                   >
                       取消
                   </button>
                   <button 
                     onClick={handleConfirmSave}
-                    disabled={isCloudLoading}
-                    className="flex-1 bg-emerald-700 hover:bg-emerald-600 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 disabled:opacity-50"
+                    className="flex-1 bg-emerald-700 hover:bg-emerald-600 text-white font-bold py-3 rounded-xl"
                   >
-                      {isCloudLoading ? '上傳中...' : '確認儲存'}
+                      確認儲存
                   </button>
               </div>
           </div>
@@ -718,7 +687,7 @@ export const GameView: React.FC<GameViewProps> = ({
       return (
           <div className="absolute inset-0 z-[110] bg-black/90 flex flex-col p-6 animate-fade-in">
               <div className="flex justify-between items-center mb-4 shrink-0">
-                  <h3 className="text-white text-xl font-bold">雲端存檔列表</h3>
+                  <h3 className="text-white text-xl font-bold">選擇存檔</h3>
                   <button 
                     onClick={() => setShowLoadModal(false)}
                     className="text-gray-400 hover:text-white px-2 py-1"
@@ -728,19 +697,17 @@ export const GameView: React.FC<GameViewProps> = ({
               </div>
               
               <div className="flex-1 overflow-y-auto space-y-3 mb-4">
-                  {isCloudLoading && savedFiles.length === 0 ? (
-                      <div className="text-center text-white mt-10">載入中...</div>
-                  ) : savedFiles.length === 0 ? (
-                      <div className="text-gray-500 text-center py-10">沒有找到任何雲端存檔</div>
+                  {savedFiles.length === 0 ? (
+                      <div className="text-gray-500 text-center py-10">沒有找到任何存檔</div>
                   ) : (
                       savedFiles.map((file) => (
-                          <div key={file.id} onClick={() => handleLoadFile(file.data, file.name)} className="bg-neutral-800 border border-neutral-700 p-4 rounded-xl active:bg-neutral-700 flex justify-between items-center cursor-pointer">
+                          <div key={file.key} onClick={() => handleLoadFile(file.key, file.name)} className="bg-neutral-800 border border-neutral-700 p-4 rounded-xl active:bg-neutral-700 flex justify-between items-center cursor-pointer">
                               <div>
                                   <div className="text-white font-bold text-lg mb-1">{file.name}</div>
                                   <div className="text-xs text-gray-400">{file.date}</div>
                               </div>
                               <button 
-                                onClick={(e) => handleDeleteFile(file.id, e)}
+                                onClick={(e) => handleDeleteFile(file.key, e)}
                                 className="p-3 text-red-400 hover:text-red-300 hover:bg-red-900/30 rounded-lg transition-colors"
                               >
                                   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
@@ -955,7 +922,7 @@ export const GameView: React.FC<GameViewProps> = ({
                     className="w-full h-14 bg-emerald-900 hover:bg-emerald-800 text-emerald-100 text-xs sm:text-[10px] rounded-lg border border-emerald-700 font-bold active:scale-95 transition-all flex flex-col items-center justify-center gap-1 shadow-sm cursor-pointer touch-manipulation select-none"
                  >
                     <svg className="pointer-events-none" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
-                    雲端存檔
+                    暫存
                  </button>
                  
                  <button 
@@ -964,7 +931,7 @@ export const GameView: React.FC<GameViewProps> = ({
                     className="w-full h-14 bg-orange-900 hover:bg-orange-800 text-orange-100 text-xs sm:text-[10px] rounded-lg border border-orange-700 font-bold active:scale-95 transition-all flex flex-col items-center justify-center gap-1 shadow-sm cursor-pointer touch-manipulation select-none"
                  >
                     <svg className="pointer-events-none" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                    雲端讀取
+                    讀取
                  </button>
 
                  {/* NEW STATS BUTTON */}
