@@ -1,9 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { SetupView } from './components/SetupView';
 import { GameView } from './components/GameView';
-import { Lineup, TeamConfig, LogEntry, TeamSide, GameState } from './types';
+import { LoginView } from './components/LoginView'; // New
+import { Lineup, TeamConfig, LogEntry, TeamSide, GameState, SavedGame } from './types';
+import { auth } from './firebaseConfig';
+import { onAuthStateChanged, User } from 'firebase/auth';
 
 const App: React.FC = () => {
+  // Auth State
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
   const [view, setView] = useState<'setup' | 'game'>('setup');
   
   // Team Configuration
@@ -29,13 +36,21 @@ const App: React.FC = () => {
   const [history, setHistory] = useState<GameState[]>([]);
   const [future, setFuture] = useState<GameState[]>([]);
 
+  // Auth Effect
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
   // Prevent accidental close/refresh
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      // Only prompt if there is actual game data
       if (view === 'game' && logs.length > 0) {
         e.preventDefault();
-        e.returnValue = ''; // Standard for forcing the browser dialog
+        e.returnValue = ''; 
         return '';
       }
     };
@@ -107,13 +122,6 @@ const App: React.FC = () => {
     setOpScore(0);
     setServingTeam(initialServingTeam);
     
-    // NOTE: We do NOT reset logs or currentSet or setWins here, 
-    // because this function is called both for Set 1 (New Match) and Set 2+ (Transition).
-    // The distinction is handled by handleNewMatch vs handleNextSet.
-    
-    // Clear history for undo/redo within the new set (optional choice, generally safer to clear undo history on new set start)
-    // To preserve undo across sets, we would need to not clear this, but for simplicity/performance we clear undo stack per set start logic often.
-    // Here we clear it to start the set "fresh" regarding actions.
     setHistory([]); 
     setFuture([]);
     
@@ -136,19 +144,15 @@ const App: React.FC = () => {
 
   // 2. NEXT SET (Preserve match data, go to setup for new lineup)
   const handleNextSet = () => {
-    pushHistory(); // Optional: Save state before transition
+    pushHistory(); 
 
-    // Determine winner of the set we just finished
     if (myScore > opScore) {
       setMySetWins(prev => prev + 1);
     } else if (opScore > myScore) {
       setOpSetWins(prev => prev + 1);
     }
 
-    // Increment Set Number
     setCurrentSet(prev => prev + 1);
-
-    // Go back to setup, but KEEPS current teamConfig and lineups as defaults (via state)
     setView('setup'); 
   };
 
@@ -160,7 +164,6 @@ const App: React.FC = () => {
   ) => {
     pushHistory();
     
-    // Inject currentSet into the new log
     if (newLog) {
       setLogs(prev => [...prev, { ...newLog, setNumber: currentSet }]);
     }
@@ -193,17 +196,25 @@ const App: React.FC = () => {
     setServingTeam(savedState.servingTeam);
     setLogs(savedState.logs);
     
-    // Clear history/future to avoid conflicts after load
     setHistory([]);
     setFuture([]);
+    setView('game');
   };
+
+  // Render Logic
+  if (authLoading) {
+    return <div className="h-full w-full bg-neutral-900 flex items-center justify-center text-white">載入中...</div>;
+  }
+
+  if (!user) {
+    return <LoginView />;
+  }
 
   return (
     <div className="h-full w-full bg-neutral-900 flex justify-center">
       <div className="w-full max-w-[430px] bg-neutral-900 flex flex-col relative shadow-2xl border-x border-neutral-800 h-full">
         {view === 'setup' ? (
           <SetupView 
-            // Pass current state as initial values to persist data when coming from "Next Set"
             initialConfig={teamConfig}
             initialMyLineup={myLineup}
             initialOpLineup={opLineup}
@@ -211,6 +222,7 @@ const App: React.FC = () => {
           />
         ) : (
           <GameView 
+            currentUser={user} // Pass user to GameView
             teamConfig={teamConfig}
             currentSet={currentSet}
             mySetWins={mySetWins}
@@ -228,7 +240,7 @@ const App: React.FC = () => {
             onNewSet={handleNextSet}
             canUndo={history.length > 0}
             canRedo={future.length > 0}
-            onExit={handleNewMatch} // New Match Button
+            onExit={handleNewMatch}
           />
         )}
       </div>
